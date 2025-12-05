@@ -254,13 +254,33 @@ static struct ppa get_new_page(struct ssd *ssd, uint16_t rgid,
 		uint16_t ruhid, bool for_gc) 
 {
 	/* 2. Getting Physical Page to Write */
-	/**************
+	/**************/
     struct ppa ppa; 
 
-	...
+    struct ruh *ruh = &ssd->ruhtbl[ruhid];
+    struct ru_mgmt *rum = &ssd->rums[rgid];
+	
+    int cur_ruid;
+
+    if (for_gc) {
+        // GC용 RU: 각 RG마다 하나씩 예약해 둔 ii_gc_ruid 사용
+        cur_ruid = rum->ii_gc_ruid;
+    } 
+    else {
+        // 일반 write용 RU: (rgid, ruhid)에 해당하는 active RU
+        cur_ruid = ruh->cur_ruids[rgid];
+    }
+
+    struct ru *ru = &rum->rus[cur_ruid];
+
+    ppa.g.ch  = ru->wp.ch;
+    ppa.g.lun = ru->wp.lun;
+    ppa.g.pl  = ru->wp.pl;
+    ppa.g.blk = ru->wp.blk; 
+    ppa.g.pg  = ru->wp.pg;
 
 	return ppa;
-	**************/
+	/**************/
 }																		
 
 static void ssd_init_params(struct ssdparams *spp, FemuCtrl *n)
@@ -876,14 +896,26 @@ static uint64_t ssd_write(struct ssd *ssd, NvmeRequest *req)
 	NvmeRwCmd *rw = (NvmeRwCmd*)&req->cmd;				
 
 	/* 1. DTYPE & PID parsing */
-	/******************************
-    uint8_t dtype = hihi;
-	uint16_t pid = ;
-	uint16_t rgif = ;
-	uint16_t rgid = ;
-	uint16_t ph = ;
-	*******************************/
+	/******************************/
+    uint8_t dtype = rw->dsmgmt; // defined in nvme.h
+	uint16_t pid = le16_to_cpu(rw->dspec); // defined in nvme.h, little endian 16bit to cpu endian(for safe)
+	uint16_t rgif = endgrp->fdp.rgif; // Initialized by nvme_init_endgrps() in femu.c
+	uint16_t rgid;
+	uint16_t ph;
 
+    if (rgif == 0) { // endurance group has only one RG
+        rgid = 0;
+        ph   = pid;
+    } else {
+        uint16_t ph_bits = 16 - rgif; // PHNDL 영역 비트수
+        uint16_t ph_mask = (1u << ph_bits) - 1; // 하위 비트가 모두 1인 마스크
+
+        rgid = pid >> ph_bits;    // 상위 rgif 비트 → RGID
+        ph   = pid & ph_mask;     // 하위 비트 → PHNDL
+    }
+	/*******************************/
+
+    // FDP가 아닌 경우
 	if (dtype != NVME_DIRECTIVE_DATA_PLACEMENT) {
 		ph = 0;
 		rgid = 0;
