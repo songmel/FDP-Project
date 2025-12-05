@@ -877,7 +877,7 @@ static uint64_t ssd_write(struct ssd *ssd, NvmeRequest *req)
 
 	/* 1. DTYPE & PID parsing */
 	/******************************
-    uint8_t dtype = ;
+    uint8_t dtype = hihi;
 	uint16_t pid = ;
 	uint16_t rgif = ;
 	uint16_t rgid = ;
