@@ -241,12 +241,81 @@ static void ssd_advance_ru_write_pointer(struct ssd *ssd, uint16_t rgid,
 {
 	/* 3. Advancing Write Pointer */
 	/*****************/
+    struct ssdparams *spp = &ssd->sp;
+
+    struct ru_mgmt *rum = &ssd->rums[rgid];
+    struct ruh *ruh = &ssd->ruhtbl[ruhid];
+
+    struct ru *ru = NULL;
+    struct ru *next_ru = NULL;
+    int cur_ruid, next_ruid;
 
 
+    // 1. 어느 RU의 wp를 옮길지 선정
+    if (for_gc) {
+        cur_ruid = rum->ii_gc_ruid;
+    } 
+    else {
+        cur_ruid = ruh->cur_ruids[rgid];
+    }
+    ru = &rum->rus[cur_ruid];
 
 
+    // 2. wp 증가 로직: ch -> lun -> pg 순서
+
+    // 해당 RG가 시작하는 Channel과 Lun 계산
+    int start_ch = rgid * RG_DEGREE / spp->luns_per_ch;
+
+    // 채널 증가
+    ru->wp.ch++;
+
+    // 채널 범위 초과 시 (RG 당 할당된 채널 수 만큼만 순회)
+    if (ru->wp.ch >= start_ch + spp->chs_per_ru) {
+        ru->wp.ch = start_ch; // 채널 다시 초기화
+        ru->wp.lun++; // lun 증가
+
+        // lun 범위 초과 시
+        if (ru->wp.lun >= spp->luns_per_ch) {
+            ru->wp.lun = 0; // lun 초기화
+            ru->wp.pg++; // 페이지 증가
+        }
+    }
 
 
+    // 3. RU가 꽉 찼는지 (더 쓸 페이지가 없는지) 확인
+    if (ru->wp.pg == spp->pgs_per_blk) {
+        
+        // 3-1. 기존 ru를 full리스트로 이동
+        if (ru->vpc == spp->pgs_per_ru) {
+            QTAILQ_INSERT_TAIL(&rum->full_ru_list, ru, entry);
+            rum->full_ru_cnt++;
+        }
+        else {
+            pqueue_insert(rum->victim_ru_pq, ru);
+            rum->victim_ru_cnt++;
+        }
+
+        // 3-2. 새로운 ru 할당
+        next_ruid = get_next_free_ruid(ssd, rum);
+        
+        // 3-3. 매핑 테이블 갱신
+        if (for_gc) {
+            rum->ii_gc_ruid = next_ruid;
+        }
+        else {
+            ssd->ruhtbl[ruhid].cur_ruids[rgid] = next_ruid;
+        }
+
+        // 3-4. 새로운 ru의 wp 초기화
+        next_ru = &rum->rus[next_ruid];
+        next_ru->wp.ch = start_ch;
+        next_ru->wp.lun = 0;
+        next_ru->wp.pl = 0;
+        next_ru->wp.blk = next_ru->id;
+        next_ru->wp.pg = 0;
+
+        next_ru->ruhid = ruhid;
+    }
 	/*****************/
 }																					
 
@@ -255,7 +324,7 @@ static struct ppa get_new_page(struct ssd *ssd, uint16_t rgid,
 {
 	/* 2. Getting Physical Page to Write */
 	/**************/
-    struct ppa ppa; 
+    struct ppa ppa = { .ppa = 0 };
 
     struct ruh *ruh = &ssd->ruhtbl[ruhid];
     struct ru_mgmt *rum = &ssd->rums[rgid];
