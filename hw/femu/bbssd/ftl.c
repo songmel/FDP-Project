@@ -821,7 +821,7 @@ static struct ru *select_victim_ru(struct ssd *ssd, bool force, int rgid)
 }
 
 /* here ppa identifies the block we want to clean */
-static void clean_one_block(struct ssd *ssd, struct ppa *ppa, uint16_t rgid, uint16_t ruhid)
+static void clean_one_block(struct ssd *ssd, struct ppa *ppa, uint16_t rgid, uint16_t ruhid, uint64_t *lpn_list, int *lpn_cnt)
 {
     struct ssdparams *spp = &ssd->sp;
     struct nand_page *pg_iter = NULL;
@@ -833,6 +833,13 @@ static void clean_one_block(struct ssd *ssd, struct ppa *ppa, uint16_t rgid, uin
         /* there shouldn't be any free page in victim blocks */
         ftl_assert(pg_iter->status != PG_FREE);
         if (pg_iter->status == PG_VALID) {
+            // FDP: 이동 전, 현재 페이지의 LPN을 가져와서 비교 리스트에 저장
+            uint64_t lpn = get_rmap_ent(ssd, ppa);
+            if (lpn_list && lpn_cnt) {
+                lpn_list[*lpn_cnt] = lpn;
+                *lpn_cnt += 1;
+            }
+
             gc_read_page(ssd, ppa);
             /* delay the maptbl update until "write" happens */
             fdp_gc_write_page(ssd, ppa, rgid, ruhid);
@@ -841,6 +848,15 @@ static void clean_one_block(struct ssd *ssd, struct ppa *ppa, uint16_t rgid, uin
     }
 
     ftl_assert(get_blk(ssd, ppa)->vpc == cnt);
+}
+
+// qsort를 위한 비교 함수
+static int compare_uint64(const void *a, const void *b) {
+    uint64_t arg1 = *(const uint64_t *)a;
+    uint64_t arg2 = *(const uint64_t *)b;
+    if (arg1 < arg2) return -1;
+    if (arg1 > arg2) return 1;
+    return 0;
 }
 
 static int do_gc(struct ssd *ssd, uint16_t rgid, bool force, NvmeRequest *req)
@@ -854,6 +870,11 @@ static int do_gc(struct ssd *ssd, uint16_t rgid, bool force, NvmeRequest *req)
 	NvmeNamespace *ns = req->ns;
 	int start_lunidx = rgid * RG_DEGREE;
 	uint16_t ruhid;
+
+    // FDP: lpn 수집을 위한 배열 선언
+    // 최대 이동 가능한 페이지 수 = RG_DEGREE(16) * 페이지 수(256) = 4096
+    uint64_t *moved_lpns = g_malloc0(sizeof(uint64_t) * RG_DEGREE * spp->pgs_per_blk);
+    int moved_cnt = 0;
 
 	victim_ru = select_victim_ru(ssd, force, rgid);
 	if (!victim_ru) {
@@ -873,7 +894,7 @@ static int do_gc(struct ssd *ssd, uint16_t rgid, bool force, NvmeRequest *req)
 		ppa.g.lun = lunidx % spp->luns_per_ch;
 		ppa.g.pl = 0;
 		lunp = get_lun(ssd, &ppa);
-		clean_one_block(ssd, &ppa, rgid, ruhid);
+		clean_one_block(ssd, &ppa, rgid, ruhid, moved_lpns, &moved_cnt);
 		mark_block_free(ssd, &ppa);
 
 		if (spp->enable_gc_delay) {
@@ -889,14 +910,66 @@ static int do_gc(struct ssd *ssd, uint16_t rgid, bool force, NvmeRequest *req)
 
 	if (ruh->ruht == NVME_RUHT_INITIALLY_ISOLATED && log_event(ruh, FDP_EVT_MEDIA_REALLOC)) {
 		/* 4. FDP Event logging */
-		/*****************
+		/*****************/
 		NvmeFdpEvent *e = nvme_fdp_alloc_event(req->ns->ctrl, &ns->endgrp->fdp.ctrl_events);
 
+        if (e) {
+            uint64_t start_lpn = 0;
 
+            // 0. 가장 긴 연속 구간 찾기
+            if (moved_cnt > 0) {
+                // 0-1. LPN 정렬
+                qsort(moved_lpns, moved_cnt, sizeof(uint64_t), compare_uint64);
 
+                // 0-2. 연속 구간 탐색
+                uint64_t max_len = 0;
+                uint64_t current_len = 1;
+                uint64_t best_start_idx = 0;
+                uint64_t current_start_idx = 0;
 
-		*****************/
+                for (int i = 1; i < moved_cnt; i++) {
+                    if (moved_lpns[i] == moved_lpns[i-1] + 1) {
+                        current_len++;
+                    } else {
+                        if (current_len > max_len) {
+                            max_len = current_len;
+                            best_start_idx = current_start_idx;
+                        }
+                        current_start_idx = i;
+                        current_len = 1;
+                    }
+                }
+                // 반복문 마지막 구간 체크
+                if (current_len > max_len) {
+                    max_len = current_len;
+                    best_start_idx = current_start_idx;
+                }
+
+                start_lpn = moved_lpns[best_start_idx];
+            }
+
+            // 1. 이벤트 타입 설정: Media Reallocated Event (0x80)
+            e->type = FDP_EVT_MEDIA_REALLOC;
+
+            // 2. 플래그 설정: PID, NSID, Location 정보가 유효함을 표시
+            e->flags = FDPEF_PIV | FDPEF_NSIDV | FDPEF_LV;
+
+            // 3. 필드 매핑 (과제 기준 xNVMe 호환을 위해 LBA -> PID, NLBAM -> Timestamp)
+            // LBA: 이동된 데이터의 LBA
+            e->pid = start_lpn * spp->secs_per_pg;
+
+            // NLBAM (Number of LBAs Moved): 이동된 유효 페이지 수
+            e->timestmap = victim_ru->vpc;
+
+            // 4. 기타 필수 정보 설정
+            e->nsid = ns->id;
+            e->rgid = rgid;
+            e->ruhid = ruhid;
+        }
+		/*****************/
 	}
+
+    g_free(moved_lpns);
 
 	/* reset wp of victim ru */
 	victim_ru->wp.ch = start_lunidx / spp->luns_per_ch;
