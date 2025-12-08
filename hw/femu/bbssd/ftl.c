@@ -959,7 +959,7 @@ static int do_gc(struct ssd *ssd, uint16_t rgid, bool force, NvmeRequest *req)
             e->pid = start_lpn * spp->secs_per_pg;
 
             // NLBAM (Number of LBAs Moved): 이동된 유효 페이지 수
-            e->timestamp = victim_ru->vpc * spp->secs_per_pg;
+            e->timestamp = moved_cnt * spp->secs_per_pg;
 
             // 4. 기타 필수 정보 설정
             e->nsid = ns->id;
