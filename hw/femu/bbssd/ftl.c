@@ -1052,11 +1052,11 @@ static uint64_t ssd_write(struct ssd *ssd, NvmeRequest *req)
 	uint16_t ph = 0;
 
     // [DEBUG] 처음 20개 요청은 무조건 출력!
-    static int debug_cnt = 0;
-    if (debug_cnt < 20) {
-        printf("[DEBUG #%d] LBA=%lu | Raw Control=0x%04x | DTYPE=%d | PID=%d\n", 
-               debug_cnt++, lba, control, dtype, pid);
-    }
+    // static int debug_cnt = 0;
+    // if (debug_cnt < 20) {
+    //     printf("[DEBUG #%d] LBA=%lu | Raw Control=0x%04x | DTYPE=%d | PID=%d\n", 
+    //            debug_cnt++, lba, control, dtype, pid);
+    // }
 
 	// Directive Type이 FDP(0x02)인 경우에만 파싱 수행
 	if (dtype == NVME_DIRECTIVE_DATA_PLACEMENT) {
