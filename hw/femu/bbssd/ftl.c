@@ -1051,6 +1051,13 @@ static uint64_t ssd_write(struct ssd *ssd, NvmeRequest *req)
 	uint16_t rgid = 0;
 	uint16_t ph = 0;
 
+    // [DEBUG] 처음 20개 요청은 무조건 출력!
+    static int debug_cnt = 0;
+    if (debug_cnt < 20) {
+        printf("[DEBUG #%d] LBA=%lu | Raw Control=0x%04x | DTYPE=%d | PID=%d\n", 
+               debug_cnt++, lba, control, dtype, pid);
+    }
+
 	// Directive Type이 FDP(0x02)인 경우에만 파싱 수행
 	if (dtype == NVME_DIRECTIVE_DATA_PLACEMENT) {
 		// RGID: PID의 상위 rgif 비트
@@ -1142,15 +1149,19 @@ static void *ftl_thread(void *arg)
 
 			ftl_assert(req);
 			switch (req->cmd.opcode) {
-				case NVME_CMD_WRITE:
-                lat = ssd_write(ssd, req);
-                break;
-            case NVME_CMD_READ:
-                lat = ssd_read(ssd, req);
-                break;
-            case NVME_CMD_DSM:
-                lat = 0;
-                break;
+                case NVME_CMD_WRITE:
+                    lat = ssd_write(ssd, req);
+                    break;
+                case NVME_CMD_READ:
+                    lat = ssd_read(ssd, req);
+                    break;
+                case NVME_CMD_DSM:
+                    lat = 0;
+                    break;
+                // [추가] 0x12 (NVME_CMD_IO_MGMT_RECV) 처리 추가
+                case NVME_CMD_IO_MGMT_RECV:
+                    lat = 0;
+                    break;
             default:
                 ftl_err("FTL received unkown request type (opcode: %d), ERROR\n", req->cmd.opcode);
             }
