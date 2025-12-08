@@ -1016,16 +1016,57 @@ static uint16_t nvme_fdp_events(FemuCtrl *n, NvmeCmd *cmd, uint32_t endgrpid,
                                 uint32_t buf_len, uint64_t off)  
 {
 	/* 5. FDP events log page return */
-	/******************************
+	/******************************/
     NvmeEnduranceGroup *endgrp;
     NvmeFdpEventBuffer *ebuf;
     NvmeFdpEvent *event;
     g_autofree NvmeFdpEventsLog *elog = NULL;
 
-	...
+	uint32_t log_size, trans_len;
+    uint64_t prp1 = le64_to_cpu(cmd->dptr.prp1);
+    uint64_t prp2 = le64_to_cpu(cmd->dptr.prp2);
+    unsigned int i, idx;
+
+    // 1. Endurance Group ID 체크
+    if (endgrpid != 1) {
+        return NVME_INVALID_FIELD | NVME_DNR;
+    }
+
+    endgrp = &n->endgrps[endgrpid - 1];
+    // Media Reallocated Event는 Controller Event이므로 ctrl_events 버퍼를 사용
+    ebuf = &endgrp->fdp.ctrl_events;
+
+    // 2. 전체 로그 페이지 크기 계산
+    // Header(64B) + (Event Count * Event Size(64B))
+    log_size = sizeof(NvmeFdpEventsLog) + (ebuf->nelems * sizeof(NvmeFdpEvent));
+
+    if (off >= log_size) {
+        return NVME_INVALID_FIELD | NVME_DNR;
+    }
+
+    trans_len = MIN(log_size - off, buf_len);
+
+    // 3. 버퍼 할당 및 초기화
+    elog = g_malloc0(log_size);
+    
+    // 헤더 바로 다음 위치부터 이벤트들이 저장됨
+    event = (NvmeFdpEvent *)(elog + 1);
+
+    // 4. 헤더 정보 채우기 (이벤트 개수)
+    elog->num_events = cpu_to_le32(ebuf->nelems);
+
+    // 5. 링 버퍼에서 선형 버퍼로 이벤트 복사
+    // 링 버퍼의 start 인덱스부터 nelems 만큼 순회하며 복사 (오래된 이벤트 -> 최신 이벤트 순)
+    for (i = 0; i < ebuf->nelems; i++) {
+        // 원형 버퍼 인덱스 계산
+        idx = (ebuf->start + i) % NVME_FDP_MAX_EVENTS;
+        
+        // 데이터 복사
+        memcpy(&event[i], &ebuf->events[idx], sizeof(NvmeFdpEvent));
+    }
 
 	return dma_read_prp(n, (uint8_t *)elog + off, trans_len, prp1, prp2);
-	******************************/
+	/******************************/
 } 																			
 
 static uint16_t nvme_get_log(FemuCtrl *n, NvmeCmd *cmd)

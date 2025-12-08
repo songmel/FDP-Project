@@ -959,7 +959,7 @@ static int do_gc(struct ssd *ssd, uint16_t rgid, bool force, NvmeRequest *req)
             e->pid = start_lpn * spp->secs_per_pg;
 
             // NLBAM (Number of LBAs Moved): 이동된 유효 페이지 수
-            e->timestmap = victim_ru->vpc;
+            e->timestamp = victim_ru->vpc;
 
             // 4. 기타 필수 정보 설정
             e->nsid = ns->id;
@@ -1039,29 +1039,31 @@ static uint64_t ssd_write(struct ssd *ssd, NvmeRequest *req)
 
 	/* 1. DTYPE & PID parsing */
 	/******************************/
-    uint8_t dtype = rw->dsmgmt; // defined in nvme.h
-	uint16_t pid = le16_to_cpu(rw->dspec); // defined in nvme.h, little endian 16bit to cpu endian(for safe)
-	uint16_t rgif = endgrp->fdp.rgif; // Initialized by nvme_init_endgrps() in femu.c
-	uint16_t rgid;
-	uint16_t ph;
+    // CDW12의 상위 16비트인 control 필드에서 dtype(bits 4-7) 추출
+	uint16_t control = le16_to_cpu(rw->control);
+	uint8_t dtype = (control >> 4) & 0xF;
 
-    if (rgif == 0) { // endurance group has only one RG
-        rgid = 0;
-        ph   = pid;
-    } else {
-        uint16_t ph_bits = 16 - rgif; // PHNDL 영역 비트수
-        uint16_t ph_mask = (1u << ph_bits) - 1; // 하위 비트가 모두 1인 마스크
+	// CDW13의 상위 16비트인 dspec 필드가 곧 PID
+	uint16_t pid = le16_to_cpu(rw->dspec);
+	
+	// FDP 설정을 확인하여 RGIF 값 가져오기
+	uint16_t rgif = endgrp->fdp.rgif;
+	uint16_t rgid = 0;
+	uint16_t ph = 0;
 
-        rgid = pid >> ph_bits;    // 상위 rgif 비트 → RGID
-        ph   = pid & ph_mask;     // 하위 비트 → PHNDL
-    }
-	/*******************************/
-
-    // FDP가 아닌 경우
-	if (dtype != NVME_DIRECTIVE_DATA_PLACEMENT) {
-		ph = 0;
+	// Directive Type이 FDP(0x02)인 경우에만 파싱 수행
+	if (dtype == NVME_DIRECTIVE_DATA_PLACEMENT) {
+		// RGID: PID의 상위 rgif 비트
+		rgid = pid >> (16 - rgif);
+		
+		// PHNDL: PID의 하위 (16 - rgif) 비트
+		ph = pid & ((1 << (16 - rgif)) - 1);
+	} else {
+		// FDP 쓰기가 아니면 기본값(0) 사용
 		rgid = 0;
+		ph = 0;
 	}
+	/*******************************/
 
 	ruhid = ns->fdp.phs[ph];						
 
