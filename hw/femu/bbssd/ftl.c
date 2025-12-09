@@ -915,6 +915,7 @@ static int do_gc(struct ssd *ssd, uint16_t rgid, bool force, NvmeRequest *req)
 
         if (e) {
             uint64_t start_lpn = 0;
+            uint64_t max_len = 0;
 
             // 0. 가장 긴 연속 구간 찾기
             if (moved_cnt > 0) {
@@ -922,7 +923,6 @@ static int do_gc(struct ssd *ssd, uint16_t rgid, bool force, NvmeRequest *req)
                 qsort(moved_lpns, moved_cnt, sizeof(uint64_t), compare_uint64);
 
                 // 0-2. 연속 구간 탐색
-                uint64_t max_len = 0;
                 uint64_t current_len = 1;
                 uint64_t best_start_idx = 0;
                 uint64_t current_start_idx = 0;
@@ -956,14 +956,14 @@ static int do_gc(struct ssd *ssd, uint16_t rgid, bool force, NvmeRequest *req)
 
             // 3. 필드 매핑 (과제 기준 xNVMe 호환을 위해 LBA -> PID, NLBAM -> Timestamp)
             // LBA: 이동된 데이터의 LBA
-            e->pid = start_lpn * spp->secs_per_pg;
+            e->pid = cpu_to_le16((uint16_t) start_lpn * spp->secs_per_pg);
 
             // NLBAM (Number of LBAs Moved): 이동된 유효 페이지 수
-            e->timestamp = moved_cnt * spp->secs_per_pg;
+            e->timestamp = cpu_to_le64(max_len * spp->secs_per_pg);
 
             // 4. 기타 필수 정보 설정
-            e->nsid = ns->id;
-            e->rgid = rgid;
+            e->nsid = cpu_to_le32(ns->id);
+            e->rgid = cpu_to_le16(rgid);
             e->ruhid = ruhid;
         }
 		/*****************/
